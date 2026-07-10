@@ -18,12 +18,14 @@ on:
       - '.github/r2-sync-queue.json'
 
 env:
+ env:
   R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
   AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-  # This automatically stitches together the URL Cloudflare requires!
-  R2_ENDPOINT: "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+  # 👇 We are passing the explicit URL string directly here to completely bypass the secret lookup bug 👇
+  R2_ENDPOINT: "https://2928cbc34cbb5c61a9a6ca27c02e1d84.r2.cloudflarestorage.com"
   LOCAL_TEMP_DIR: "runner_temp" # Local folder for GitHub Actions runner
+ 
 
 jobs:
   smart-sync:
