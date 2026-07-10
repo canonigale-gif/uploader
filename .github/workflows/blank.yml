@@ -17,19 +17,18 @@ on:
     paths:
       - '.github/r2-sync-queue.json'
 
-# --- MAKE SURE THIS IS FLUSH TO THE LEFT MARGIN ---
 env:
   R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
   AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  # This automatically stitches together the URL Cloudflare requires!
   R2_ENDPOINT: "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
-  LOCAL_TEMP_DIR: "runner_temp"
+  LOCAL_TEMP_DIR: "runner_temp" # Local folder for GitHub Actions runner
 
 jobs:
   smart-sync:
     runs-on: ubuntu-latest
     steps:
-      # ... rest of your steps here ...
       - name: Checkout
         uses: actions/checkout@v4
 
