@@ -1,0 +1,123 @@
+name: Smart URL to R2 Sync (Safe Mode)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: 'URL to download'
+        required: true
+        type: string
+      r2_key:
+        description: 'Custom R2 path (optional)'
+        required: false
+        type: string
+  schedule:
+    - cron: '0 2 * * *'
+  push:
+    paths:
+      - '.github/r2-sync-queue.json'
+
+env:
+  R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  LOCAL_TEMP_DIR: "runner_temp" # Local folder for GitHub Actions runner
+
+jobs:
+  smart-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize Safe Environment
+        run: |
+          pip install awscli jq --quiet
+          # Create local temp directories
+          mkdir -p ${{ env.LOCAL_TEMP_DIR }}/downloads
+          echo "✅ Local temp directory initialized."
+
+      - name: Process Targets
+        id: targets
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo '[{"url": "${{ github.event.inputs.source_url }}", "r2_key": "${{ github.event.inputs.r2_key }}"}]' > ${{ env.LOCAL_TEMP_DIR }}/targets.json
+          elif [ -f ".github/r2-sync-queue.json" ]; then
+            cp .github/r2-sync-queue.json ${{ env.LOCAL_TEMP_DIR }}/targets.json
+          else
+            echo '[]' > ${{ env.LOCAL_TEMP_DIR }}/targets.json
+          fi
+
+      - name: Smart Download & Sync
+        run: |
+          jq -c '.[]' ${{ env.LOCAL_TEMP_DIR }}/targets.json | while IFS= read -r item; do
+            url=$(echo "$item" | jq -r '.url')
+            custom_key=$(echo "$item" | jq -r '.r2_key // empty')
+            
+            # --- R2 PATH LOGIC (Ensures /temp prefix) ---
+            if [ -z "$custom_key" ]; then
+              base_name=$(basename "$url" | sed 's/[^a-zA-Z0-9._-]/_/g')
+              r2_key="temp/${base_name}"
+            else
+              if [[ "$custom_key" != temp/* ]]; then
+                r2_key="temp/${custom_key}"
+              else
+                r2_key="$custom_key"
+              fi
+            fi
+            
+            echo "::group::Processing: $r2_key"
+            
+            # 1. Check Remote Metadata (ETag)
+            remote_hash=$(curl -sI -L "$url" | grep -i etag | tr -d '\r' | awk '{print $2}' | tr -d '"')
+            
+            # 2. Check Existing R2 Object
+            local_hash=""
+            if aws s3api head-object --bucket "$R2_BUCKET" --key "$r2_key" --endpoint-url "$R2_ENDPOINT" > /dev/null 2>&1; then
+              local_hash=$(aws s3api head-object --bucket "$R2_BUCKET" --key "$r2_key" --endpoint-url "$R2_ENDPOINT" --query 'ETag' --output text | tr -d '"')
+            fi
+
+            # 3. Skip if identical
+            if [ "$remote_hash" = "$local_hash" ] && [ -n "$remote_hash" ]; then
+              echo "✅ Skipped: $r2_key is already up-to-date."
+              echo "::endgroup::"
+              continue
+            fi
+
+            # 4. Smart Download with Browser Headers
+            local_file="${{ env.LOCAL_TEMP_DIR }}/downloads/dl_$(date +%s%N)_${RANDOM}"
+            
+            curl -fSL --max-time 300 \
+              -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+              -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
+              -o "$local_file" "$url"
+
+            # 5. Dynamic Content-Type & Cache Logic
+            content_type=$(file --mime-type -b "$local_file")
+            cache_control="public, max-age=3600" # Default 1 hour
+            
+            case "$content_type" in
+              image/*) cache_control="public, max-age=31536000, immutable" ;; # 1 year
+              application/javascript|text/css) cache_control="public, max-age=604800" ;; # 1 week
+              text/html) cache_control="public, max-age=300" ;; # 5 mins
+            esac
+
+            # 6. Upload to R2
+            aws s3 cp "$local_file" "s3://$R2_BUCKET/$r2_key" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "$content_type" \
+              --cache-control "$cache_control" \
+              --no-progress
+
+            echo "🚀 Uploaded: s3://$R2_BUCKET/$r2_key"
+            rm -f "$local_file"
+            echo "::endgroup::"
+          done
+
+      - name: Final Cleanup
+        if: always()
+        run: |
+          echo "🧹 Cleaning up local temp files..."
+          rm -rf ${{ env.LOCAL_TEMP_DIR }}
+          echo "✅ Workspace is clean."
